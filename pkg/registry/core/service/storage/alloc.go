@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -510,14 +511,18 @@ func (al *Allocators) txnAllocNodePorts(service *api.Service, dryRun bool) (tran
 }
 
 func initNodePorts(service *api.Service, nodePortOp *portallocator.PortAllocationOperation) error {
-	svcPortToNodePort := map[int]int{}
+	svcPortToNodePortWithProtocol := map[v1.Protocol]map[int]int{}
 	for i := range service.Spec.Ports {
+		protocol := service.Spec.Ports[i].Protocol
+		if svcPortToNodePortWithProtocol[v1.Protocol(protocol)] == nil {
+			svcPortToNodePortWithProtocol[v1.Protocol(protocol)] = make(map[int]int)
+		}
 		servicePort := &service.Spec.Ports[i]
 		if servicePort.NodePort == 0 && !shouldAllocateNodePorts(service) {
 			// Don't allocate new ports, but do respect specific requests.
 			continue
 		}
-		allocatedNodePort := svcPortToNodePort[int(servicePort.Port)]
+		allocatedNodePort := svcPortToNodePortWithProtocol[v1.Protocol(protocol)][int(servicePort.Port)]
 		if allocatedNodePort == 0 {
 			// This will only scan forward in the service.Spec.Ports list because any matches
 			// before the current port would have been found in svcPortToNodePort. This is really
@@ -531,7 +536,7 @@ func initNodePorts(service *api.Service, nodePortOp *portallocator.PortAllocatio
 					return errors.NewInvalid(api.Kind("Service"), service.Name, el)
 				}
 				servicePort.NodePort = int32(np)
-				svcPortToNodePort[int(servicePort.Port)] = np
+				svcPortToNodePortWithProtocol[v1.Protocol(protocol)][int(servicePort.Port)] = np
 			} else {
 				nodePort, err := nodePortOp.AllocateNext()
 				if err != nil {
@@ -541,7 +546,7 @@ func initNodePorts(service *api.Service, nodePortOp *portallocator.PortAllocatio
 					return errors.NewInternalError(fmt.Errorf("failed to allocate a nodePort: %v", err))
 				}
 				servicePort.NodePort = int32(nodePort)
-				svcPortToNodePort[int(servicePort.Port)] = nodePort
+				svcPortToNodePortWithProtocol[v1.Protocol(protocol)][int(servicePort.Port)] = nodePort
 			}
 		} else if int(servicePort.NodePort) != allocatedNodePort {
 			// TODO(xiangpengzhao): do we need to allocate a new NodePort in this case?
